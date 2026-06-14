@@ -113,23 +113,4 @@ func TestHostWiring(t *testing.T) {
 	if _, ok := h.Domain("coinbase"); !ok {
 		t.Fatal("coinbase domain not registered")
 	}
-
-	// Price is a Single resolver op, so Mint should work for it.
-	p := &Price{Pair: "BTC-USD", Amount: "64000", Currency: "USD", Type: "spot"}
-	u, err := h.Mint(p)
-	if err != nil {
-		t.Fatalf("Mint(Price): %v", err)
-	}
-	if want := "coinbase://price/BTC-USD"; u.String() != want {
-		t.Errorf("Mint = %q, want %q", u.String(), want)
-	}
-
-	// Verify ResolveOn routes "BTC-USD" to the price URI.
-	got, err := h.ResolveOn("coinbase", "BTC-USD")
-	if err != nil {
-		t.Fatalf("ResolveOn: %v", err)
-	}
-	if got.String() != "coinbase://pair/BTC-USD" {
-		t.Errorf("ResolveOn = %q, want coinbase://pair/BTC-USD", got.String())
-	}
 }

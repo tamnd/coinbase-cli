@@ -45,19 +45,24 @@ key, nothing to run alongside it.`,
 func (Domain) Register(app *kit.App) {
 	app.SetClient(newClient)
 
-	kit.Handle(app, kit.OpMeta{Name: "currencies", Group: "read", List: true,
-		Summary: "List all supported currencies", URIType: "currencies"},
-		currenciesOp)
+	kit.Handle(app, kit.OpMeta{Name: "spot", Group: "read", Single: true,
+		Summary: "Get spot price for a pair (e.g. BTC-USD)",
+		Args:    []kit.Arg{{Name: "pair", Help: "currency pair e.g. BTC-USD"}}},
+		spotOp)
 
-	kit.Handle(app, kit.OpMeta{Name: "price", Group: "read", Single: true,
-		Summary: "Get spot/buy/sell price for a pair (e.g. BTC-USD)", URIType: "price", Resolver: true,
-		Args:    []kit.Arg{{Name: "pair", Help: "currency pair"}}},
-		priceOp)
+	kit.Handle(app, kit.OpMeta{Name: "buy", Group: "read", Single: true,
+		Summary: "Get buy price for a pair (e.g. BTC-USD)",
+		Args:    []kit.Arg{{Name: "pair", Help: "currency pair e.g. BTC-USD"}}},
+		buyOp)
 
-	kit.Handle(app, kit.OpMeta{Name: "rates", Group: "read", Single: true,
-		Summary: "Get exchange rates for a base currency",
-		Args:    []kit.Arg{{Name: "currency", Help: "base currency"}}},
+	kit.Handle(app, kit.OpMeta{Name: "rates", Group: "read", List: true,
+		Summary: "Get exchange rates for a base currency (e.g. BTC)",
+		Args:    []kit.Arg{{Name: "currency", Help: "base currency e.g. BTC"}}},
 		ratesOp)
+
+	kit.Handle(app, kit.OpMeta{Name: "currencies", Group: "read", List: true,
+		Summary: "List all supported fiat currencies", URIType: "currencies"},
+		currenciesOp)
 }
 
 // newClient builds the Client from the host-resolved kit.Config.
@@ -80,28 +85,78 @@ func newClient(_ context.Context, cfg kit.Config) (any, error) {
 
 // --- input structs ---
 
+type spotInput struct {
+	Pair   string  `kit:"arg" help:"currency pair e.g. BTC-USD"`
+	Client *Client `kit:"inject"`
+}
+
+type buyInput struct {
+	Pair   string  `kit:"arg" help:"currency pair e.g. BTC-USD"`
+	Client *Client `kit:"inject"`
+}
+
+type ratesInput struct {
+	Currency string  `kit:"arg" help:"base currency e.g. BTC"`
+	To       string  `kit:"flag" help:"comma-separated target currencies to filter (default: all)"`
+	Client   *Client `kit:"inject"`
+}
+
 type currenciesInput struct {
 	Limit  int     `kit:"flag,inherit"`
 	Client *Client `kit:"inject"`
 }
 
-type priceInput struct {
-	Pair      string  `kit:"arg" help:"currency pair e.g. BTC-USD"`
-	PriceType string  `kit:"flag" help:"spot|buy|sell" default:"spot"`
-	Client    *Client `kit:"inject"`
-}
-
-type ratesInput struct {
-	Currency string  `kit:"arg" help:"base currency e.g. BTC"`
-	Client   *Client `kit:"inject"`
-}
-
 // --- handlers ---
+
+func spotOp(ctx context.Context, in spotInput, emit func(*Price) error) error {
+	result, err := in.Client.Spot(ctx, in.Pair)
+	if err != nil {
+		return err
+	}
+	return emit(result)
+}
+
+func buyOp(ctx context.Context, in buyInput, emit func(*Price) error) error {
+	result, err := in.Client.Buy(ctx, in.Pair)
+	if err != nil {
+		return err
+	}
+	return emit(result)
+}
+
+func ratesOp(ctx context.Context, in ratesInput, emit func(*Rate) error) error {
+	rates, err := in.Client.Rates(ctx, in.Currency)
+	if err != nil {
+		return err
+	}
+
+	// Build a filter set from --to if provided.
+	var filter map[string]bool
+	if in.To != "" {
+		filter = make(map[string]bool)
+		for _, t := range strings.Split(in.To, ",") {
+			t = strings.TrimSpace(strings.ToUpper(t))
+			if t != "" {
+				filter[t] = true
+			}
+		}
+	}
+
+	for i := range rates {
+		if filter != nil && !filter[rates[i].Target] {
+			continue
+		}
+		if err := emit(&rates[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func currenciesOp(ctx context.Context, in currenciesInput, emit func(*Currency) error) error {
 	currencies, err := in.Client.Currencies(ctx)
 	if err != nil {
-		return mapErr(err)
+		return err
 	}
 	for i := range currencies {
 		if in.Limit > 0 && i >= in.Limit {
@@ -114,36 +169,6 @@ func currenciesOp(ctx context.Context, in currenciesInput, emit func(*Currency) 
 	return nil
 }
 
-func priceOp(ctx context.Context, in priceInput, emit func(*Price) error) error {
-	var (
-		result *Price
-		err    error
-	)
-	switch in.PriceType {
-	case "buy":
-		result, err = in.Client.BuyPrice(ctx, in.Pair)
-	case "sell":
-		result, err = in.Client.SellPrice(ctx, in.Pair)
-	default:
-		in.PriceType = "spot"
-		result, err = in.Client.SpotPrice(ctx, in.Pair)
-	}
-	if err != nil {
-		return mapErr(err)
-	}
-	result.Pair = in.Pair
-	result.Type = in.PriceType
-	return emit(result)
-}
-
-func ratesOp(ctx context.Context, in ratesInput, emit func(*ExchangeRate) error) error {
-	rate, err := in.Client.ExchangeRates(ctx, in.Currency)
-	if err != nil {
-		return mapErr(err)
-	}
-	return emit(rate)
-}
-
 // --- Resolver: URI driver string functions (no network) ---
 
 // Classify turns any accepted input into the canonical (type, id).
@@ -154,7 +179,6 @@ func (Domain) Classify(input string) (uriType, id string, err error) {
 	if input == "" {
 		return "", "", errs.Usage("empty coinbase reference")
 	}
-	// If it looks like a pair (contains a dash and both parts uppercase-ish), classify as pair.
 	if looksLikePair(input) {
 		return "pair", strings.ToUpper(input), nil
 	}
@@ -165,7 +189,6 @@ func (Domain) Classify(input string) (uriType, id string, err error) {
 func (Domain) Locate(uriType, id string) (string, error) {
 	switch uriType {
 	case "pair":
-		// BTC-USD → https://www.coinbase.com/price/BTC (drop the -USD suffix)
 		base := id
 		if idx := strings.Index(id, "-"); idx != -1 {
 			base = id[:idx]
@@ -173,6 +196,8 @@ func (Domain) Locate(uriType, id string) (string, error) {
 		return "https://www.coinbase.com/price/" + strings.ToLower(base), nil
 	case "currency":
 		return "https://www.coinbase.com/price/" + strings.ToLower(id), nil
+	case "currencies":
+		return "https://www.coinbase.com/explore", nil
 	default:
 		return "", errs.Usage("coinbase has no resource type %q", uriType)
 	}
@@ -184,9 +209,4 @@ func (Domain) Locate(uriType, id string) (string, error) {
 func looksLikePair(input string) bool {
 	parts := strings.SplitN(input, "-", 2)
 	return len(parts) == 2 && len(parts[0]) >= 2 && len(parts[1]) >= 2
-}
-
-// mapErr converts a library error into the kit error kind with the right exit code.
-func mapErr(err error) error {
-	return err
 }
