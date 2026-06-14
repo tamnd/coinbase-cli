@@ -102,6 +102,7 @@ type ratesInput struct {
 }
 
 type currenciesInput struct {
+	Crypto bool    `kit:"flag" help:"list crypto currencies instead of fiat"`
 	Limit  int     `kit:"flag,inherit"`
 	Client *Client `kit:"inject"`
 }
@@ -154,7 +155,13 @@ func ratesOp(ctx context.Context, in ratesInput, emit func(*Rate) error) error {
 }
 
 func currenciesOp(ctx context.Context, in currenciesInput, emit func(*Currency) error) error {
-	currencies, err := in.Client.Currencies(ctx)
+	var currencies []Currency
+	var err error
+	if in.Crypto {
+		currencies, err = in.Client.CryptoCurrencies(ctx)
+	} else {
+		currencies, err = in.Client.Currencies(ctx)
+	}
 	if err != nil {
 		return err
 	}

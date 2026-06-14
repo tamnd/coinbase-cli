@@ -125,10 +125,10 @@ func TestSpot_JSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := coinbase.Price{
-		Base:     env.Data.Base,
-		Currency: env.Data.Currency,
-		Amount:   env.Data.Amount,
-		Type:     "spot",
+		Base:      env.Data.Base,
+		Currency:  env.Data.Currency,
+		Amount:    env.Data.Amount,
+		PriceType: "spot",
 	}
 	if p.Base != "BTC" {
 		t.Errorf("Base = %q, want BTC", p.Base)
@@ -139,8 +139,8 @@ func TestSpot_JSON(t *testing.T) {
 	if p.Amount != "64006.025" {
 		t.Errorf("Amount = %q, want 64006.025", p.Amount)
 	}
-	if p.Type != "spot" {
-		t.Errorf("Type = %q, want spot", p.Type)
+	if p.PriceType != "spot" {
+		t.Errorf("PriceType = %q, want spot", p.PriceType)
 	}
 }
 
@@ -157,16 +157,16 @@ func TestBuy_JSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := coinbase.Price{
-		Base:     env.Data.Base,
-		Currency: env.Data.Currency,
-		Amount:   env.Data.Amount,
-		Type:     "buy",
+		Base:      env.Data.Base,
+		Currency:  env.Data.Currency,
+		Amount:    env.Data.Amount,
+		PriceType: "buy",
 	}
 	if p.Base != "ETH" {
 		t.Errorf("Base = %q, want ETH", p.Base)
 	}
-	if p.Type != "buy" {
-		t.Errorf("Type = %q, want buy", p.Type)
+	if p.PriceType != "buy" {
+		t.Errorf("PriceType = %q, want buy", p.PriceType)
 	}
 }
 
@@ -206,10 +206,10 @@ func TestRates_JSON(t *testing.T) {
 func TestSplitPair(t *testing.T) {
 	// Verify Price fields round-trip correctly for a known pair.
 	p := coinbase.Price{
-		Base:     "BTC",
-		Currency: "USD",
-		Amount:   "63999",
-		Type:     "spot",
+		Base:      "BTC",
+		Currency:  "USD",
+		Amount:    "63999",
+		PriceType: "spot",
 	}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -219,7 +219,7 @@ func TestSplitPair(t *testing.T) {
 	if err := json.Unmarshal(b, &p2); err != nil {
 		t.Fatal(err)
 	}
-	if p2.Base != "BTC" || p2.Currency != "USD" || p2.Amount != "63999" || p2.Type != "spot" {
+	if p2.Base != "BTC" || p2.Currency != "USD" || p2.Amount != "63999" || p2.PriceType != "spot" {
 		t.Errorf("round-trip mismatch: %+v", p2)
 	}
 }

@@ -143,10 +143,10 @@ type Currency struct {
 
 // Price holds spot or buy price data from /v2/prices/<pair>/<type>.
 type Price struct {
-	Base     string `kit:"id" json:"base"`
-	Currency string `json:"currency"`
-	Amount   string `json:"amount"`
-	Type     string `json:"type"` // "spot" or "buy"
+	Base      string `kit:"id" json:"base"`
+	Currency  string `json:"currency"`
+	Amount    string `json:"amount"`
+	PriceType string `json:"price_type"` // "spot", "buy", or "sell"
 }
 
 // Rate is one exchange-rate row from /v2/exchange-rates.
@@ -160,6 +160,17 @@ type Rate struct {
 
 type currenciesEnv struct {
 	Data []Currency `json:"data"`
+}
+
+// cryptoCurrencyRaw is the wire format for /v2/currencies/crypto entries
+// (uses "code" instead of "id" and omits min_size).
+type cryptoCurrencyRaw struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
+}
+
+type cryptoCurrenciesEnv struct {
+	Data []cryptoCurrencyRaw `json:"data"`
 }
 
 type priceEnv struct {
@@ -179,9 +190,32 @@ type ratesEnv struct {
 
 // --- API methods ---
 
-// Currencies returns all supported currencies from /v2/currencies.
+// Currencies returns all supported fiat currencies from /v2/currencies.
 func (c *Client) Currencies(ctx context.Context) ([]Currency, error) {
-	body, err := c.Get(ctx, BaseURL+"/currencies")
+	return c.fetchCurrencies(ctx, BaseURL+"/currencies")
+}
+
+// CryptoCurrencies returns all supported crypto currencies from /v2/currencies/crypto.
+// The endpoint uses a different wire shape (code/name, no min_size) so we map it
+// to the shared Currency type.
+func (c *Client) CryptoCurrencies(ctx context.Context) ([]Currency, error) {
+	body, err := c.Get(ctx, BaseURL+"/currencies/crypto")
+	if err != nil {
+		return nil, err
+	}
+	var env cryptoCurrenciesEnv
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("currencies/crypto: %w", err)
+	}
+	out := make([]Currency, len(env.Data))
+	for i, raw := range env.Data {
+		out[i] = Currency{ID: raw.Code, Name: raw.Name}
+	}
+	return out, nil
+}
+
+func (c *Client) fetchCurrencies(ctx context.Context, url string) ([]Currency, error) {
+	body, err := c.Get(ctx, url)
 	if err != nil {
 		return nil, err
 	}
@@ -226,10 +260,10 @@ func (c *Client) fetchPrice(ctx context.Context, pair, priceType string) (*Price
 		}
 	}
 	return &Price{
-		Base:     base,
-		Currency: currency,
-		Amount:   env.Data.Amount,
-		Type:     priceType,
+		Base:      base,
+		Currency:  currency,
+		Amount:    env.Data.Amount,
+		PriceType: priceType,
 	}, nil
 }
 
