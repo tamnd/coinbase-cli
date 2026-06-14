@@ -16,7 +16,7 @@ import (
 // DefaultUserAgent identifies the client to Coinbase.
 const DefaultUserAgent = "coinbase-cli/dev (+https://github.com/tamnd/coinbase-cli)"
 
-// Host is the Coinbase website host (used by the URI driver).
+// Host is the Coinbase API host (used by the URI driver).
 const Host = "api.coinbase.com"
 
 // BaseURL is the Coinbase v2 API base.
@@ -34,9 +34,9 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		UserAgent: DefaultUserAgent,
-		Rate:      200 * time.Millisecond,
-		Retries:   5,
-		Timeout:   30 * time.Second,
+		Rate:      300 * time.Millisecond,
+		Retries:   3,
+		Timeout:   10 * time.Second,
 	}
 }
 
@@ -141,18 +141,19 @@ type Currency struct {
 	MinSize string `json:"min_size"`
 }
 
-// Price holds spot/buy/sell price data from /v2/prices/<pair>/<type>.
+// Price holds spot or buy price data from /v2/prices/<pair>/<type>.
 type Price struct {
-	Pair     string `kit:"id" json:"pair"`
-	Amount   string `json:"amount"`
+	Base     string `kit:"id" json:"base"`
 	Currency string `json:"currency"`
-	Type     string `json:"type"` // "spot", "buy", or "sell"
+	Amount   string `json:"amount"`
+	Type     string `json:"type"` // "spot" or "buy"
 }
 
-// ExchangeRate holds the rates from /v2/exchange-rates.
-type ExchangeRate struct {
-	BaseCurrency string            `kit:"id" json:"base_currency"`
-	Rates        map[string]string `json:"rates"`
+// Rate is one exchange-rate row from /v2/exchange-rates.
+type Rate struct {
+	Base   string `kit:"id" json:"base"`
+	Target string `json:"target"`
+	Rate   string `json:"rate"`
 }
 
 // --- wire envelopes ---
@@ -163,6 +164,7 @@ type currenciesEnv struct {
 
 type priceEnv struct {
 	Data struct {
+		Base     string `json:"base"`
 		Amount   string `json:"amount"`
 		Currency string `json:"currency"`
 	} `json:"data"`
@@ -190,19 +192,14 @@ func (c *Client) Currencies(ctx context.Context) ([]Currency, error) {
 	return env.Data, nil
 }
 
-// SpotPrice returns the spot price for a currency pair such as "BTC-USD".
-func (c *Client) SpotPrice(ctx context.Context, pair string) (*Price, error) {
+// Spot returns the spot price for a currency pair such as "BTC-USD".
+func (c *Client) Spot(ctx context.Context, pair string) (*Price, error) {
 	return c.fetchPrice(ctx, pair, "spot")
 }
 
-// BuyPrice returns the buy price for a currency pair.
-func (c *Client) BuyPrice(ctx context.Context, pair string) (*Price, error) {
+// Buy returns the buy price for a currency pair such as "BTC-USD".
+func (c *Client) Buy(ctx context.Context, pair string) (*Price, error) {
 	return c.fetchPrice(ctx, pair, "buy")
-}
-
-// SellPrice returns the sell price for a currency pair.
-func (c *Client) SellPrice(ctx context.Context, pair string) (*Price, error) {
-	return c.fetchPrice(ctx, pair, "sell")
 }
 
 func (c *Client) fetchPrice(ctx context.Context, pair, priceType string) (*Price, error) {
@@ -215,16 +212,30 @@ func (c *Client) fetchPrice(ctx context.Context, pair, priceType string) (*Price
 	if err := json.Unmarshal(body, &env); err != nil {
 		return nil, fmt.Errorf("price %s/%s: %w", pair, priceType, err)
 	}
+	// The API returns base and currency in the response body.
+	base := env.Data.Base
+	currency := env.Data.Currency
+	// Fall back to parsing the pair if the fields are missing.
+	if base == "" || currency == "" {
+		parts := splitPair(pair)
+		if base == "" {
+			base = parts[0]
+		}
+		if currency == "" && len(parts) > 1 {
+			currency = parts[1]
+		}
+	}
 	return &Price{
-		Pair:     pair,
+		Base:     base,
+		Currency: currency,
 		Amount:   env.Data.Amount,
-		Currency: env.Data.Currency,
 		Type:     priceType,
 	}, nil
 }
 
-// ExchangeRates returns exchange rates for a base currency such as "BTC".
-func (c *Client) ExchangeRates(ctx context.Context, currency string) (*ExchangeRate, error) {
+// Rates returns exchange rates for a base currency such as "BTC".
+// Each returned Rate has Base, Target, and Rate fields.
+func (c *Client) Rates(ctx context.Context, currency string) ([]Rate, error) {
 	url := fmt.Sprintf("%s/exchange-rates?currency=%s", BaseURL, currency)
 	body, err := c.Get(ctx, url)
 	if err != nil {
@@ -234,8 +245,23 @@ func (c *Client) ExchangeRates(ctx context.Context, currency string) (*ExchangeR
 	if err := json.Unmarshal(body, &env); err != nil {
 		return nil, fmt.Errorf("exchange-rates %s: %w", currency, err)
 	}
-	return &ExchangeRate{
-		BaseCurrency: env.Data.Currency,
-		Rates:        env.Data.Rates,
-	}, nil
+	rates := make([]Rate, 0, len(env.Data.Rates))
+	for target, rate := range env.Data.Rates {
+		rates = append(rates, Rate{
+			Base:   env.Data.Currency,
+			Target: target,
+			Rate:   rate,
+		})
+	}
+	return rates, nil
+}
+
+// splitPair splits "BTC-USD" into ["BTC", "USD"].
+func splitPair(pair string) []string {
+	for i, ch := range pair {
+		if ch == '-' {
+			return []string{pair[:i], pair[i+1:]}
+		}
+	}
+	return []string{pair}
 }
