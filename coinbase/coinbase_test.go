@@ -12,13 +12,6 @@ import (
 	"github.com/tamnd/coinbase-cli/coinbase"
 )
 
-func newTestClient(srv *httptest.Server) *coinbase.Client {
-	c := coinbase.NewClient()
-	c.Rate = 0
-	c.HTTP = srv.Client()
-	return c
-}
-
 func TestGet_UserAgent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("User-Agent") == "" {
