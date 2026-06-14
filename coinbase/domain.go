@@ -2,7 +2,6 @@ package coinbase
 
 import (
 	"context"
-	"net/url"
 	"strings"
 
 	"github.com/tamnd/any-cli/kit"
@@ -16,60 +15,52 @@ import (
 //
 // exactly as a database/sql program enables a driver with `import _
 // "github.com/lib/pq"`. The init below registers it; the host then dereferences
-// coinbase:// URIs by routing to the operations Register installs. The same
-// Domain also builds the standalone coinbase binary (see cli.NewApp), so the
-// binary and a host share one source of truth.
-//
-// This is the scaffold's starting point: one resource type, "page", served by a
-// resolver op and a list op. Add your real types here as you model the site.
+// coinbase:// URIs by routing to the operations Register installs.
 func init() { kit.Register(Domain{}) }
 
-// Domain is the coinbase driver. It carries no state; the per-run client is
-// built by the factory Register hands kit.
+// Domain is the coinbase driver.
 type Domain struct{}
 
-// Info describes the scheme, the hostnames a pasted link is matched against, and
-// the identity reused for the binary's help and version.
+// Info describes the scheme, the hostnames a pasted link is matched against,
+// and the identity reused for the binary's help and version.
 func (Domain) Info() kit.DomainInfo {
 	return kit.DomainInfo{
 		Scheme: "coinbase",
-		Hosts:  []string{Host},
+		Hosts:  []string{"coinbase.com", "www.coinbase.com", Host},
 		Identity: kit.Identity{
 			Binary: "coinbase",
-			Short:  "A command line for coinbase.",
-			Long: `A command line for coinbase.
+			Short:  "A command line for Coinbase public data.",
+			Long: `A command line for Coinbase public data.
 
-coinbase reads public coinbase data over plain HTTPS, shapes it into
+coinbase reads public Coinbase API data over plain HTTPS, shapes it into
 clean records, and prints output that pipes into the rest of your tools. No API
 key, nothing to run alongside it.`,
-			Site: Host,
+			Site: "coinbase.com",
 			Repo: "https://github.com/tamnd/coinbase-cli",
 		},
 	}
 }
 
-// Register installs the client factory and every operation onto app. A resolver
-// op (Single) names its own record type and answers `ant get`; a List op
-// enumerates a parent resource's members and answers `ant ls`.
+// Register installs the client factory and every operation onto app.
 func (Domain) Register(app *kit.App) {
 	app.SetClient(newClient)
 
-	// Resolver op: one record per id, the home of `coinbase page` and
-	// `ant get coinbase://page/<id>`.
-	kit.Handle(app, kit.OpMeta{Name: "page", Group: "read", Single: true,
-		Summary: "Fetch a page by path or URL", URIType: "page", Resolver: true,
-		Args: []kit.Arg{{Name: "ref", Help: "page path or URL"}}}, getPage)
+	kit.Handle(app, kit.OpMeta{Name: "currencies", Group: "read", List: true,
+		Summary: "List all supported currencies", URIType: "currencies"},
+		currenciesOp)
 
-	// List op: members of a page, the home of `coinbase links` and `ant ls`.
-	// It emits page stubs, so every listed member is itself an addressable
-	// coinbase://page/ URI a host can follow.
-	kit.Handle(app, kit.OpMeta{Name: "links", Group: "read", List: true,
-		Summary: "List the pages a page links to", URIType: "page",
-		Args: []kit.Arg{{Name: "ref", Help: "page path or URL"}}}, listLinks)
+	kit.Handle(app, kit.OpMeta{Name: "price", Group: "read", Single: true,
+		Summary: "Get spot/buy/sell price for a pair (e.g. BTC-USD)", URIType: "price", Resolver: true,
+		Args:    []kit.Arg{{Name: "pair", Help: "currency pair"}}},
+		priceOp)
+
+	kit.Handle(app, kit.OpMeta{Name: "rates", Group: "read", Single: true,
+		Summary: "Get exchange rates for a base currency",
+		Args:    []kit.Arg{{Name: "currency", Help: "base currency"}}},
+		ratesOp)
 }
 
-// newClient builds the client from the host-resolved config, so a host and the
-// standalone binary pace and identify themselves the same way.
+// newClient builds the Client from the host-resolved kit.Config.
 func newClient(_ context.Context, cfg kit.Config) (any, error) {
 	c := NewClient()
 	if cfg.UserAgent != "" {
@@ -87,87 +78,115 @@ func newClient(_ context.Context, cfg kit.Config) (any, error) {
 	return c, nil
 }
 
-// --- inputs ---
-//
-// Each handler takes a typed input struct. kit fills the fields from the tags:
-// kit:"arg" is a positional argument, kit:"flag,inherit" binds the framework's
-// shared flag of the same name, and kit:"inject" receives the client newClient
-// builds.
+// --- input structs ---
 
-type pageRef struct {
-	Ref    string  `kit:"arg" help:"page path or URL"`
+type currenciesInput struct {
+	Limit  int     `kit:"flag,inherit"`
 	Client *Client `kit:"inject"`
 }
 
-type listRef struct {
-	Ref    string  `kit:"arg" help:"page path or URL"`
-	Limit  int     `kit:"flag,inherit" help:"max results"`
-	Client *Client `kit:"inject"`
+type priceInput struct {
+	Pair      string  `kit:"arg" help:"currency pair e.g. BTC-USD"`
+	PriceType string  `kit:"flag" help:"spot|buy|sell" default:"spot"`
+	Client    *Client `kit:"inject"`
+}
+
+type ratesInput struct {
+	Currency string  `kit:"arg" help:"base currency e.g. BTC"`
+	Client   *Client `kit:"inject"`
 }
 
 // --- handlers ---
 
-func getPage(ctx context.Context, in pageRef, emit func(*Page) error) error {
-	p, err := in.Client.GetPage(ctx, pagePath(in.Ref))
+func currenciesOp(ctx context.Context, in currenciesInput, emit func(*Currency) error) error {
+	currencies, err := in.Client.Currencies(ctx)
 	if err != nil {
 		return mapErr(err)
 	}
-	return emit(p)
-}
-
-func listLinks(ctx context.Context, in listRef, emit func(*Page) error) error {
-	pages, err := in.Client.PageLinks(ctx, pagePath(in.Ref), in.Limit)
-	if err != nil {
-		return mapErr(err)
-	}
-	for _, p := range pages {
-		if err := emit(p); err != nil {
+	for i := range currencies {
+		if in.Limit > 0 && i >= in.Limit {
+			break
+		}
+		if err := emit(&currencies[i]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// --- Resolver: the URI-native string functions, pure and network-free ---
-
-// Classify turns any accepted input — a bare path or a full coinbase.com URL —
-// into the canonical (type, id), so `ant resolve` and `ant url` touch no network.
-func (Domain) Classify(input string) (uriType, id string, err error) {
-	id = pagePath(input)
-	if id == "" {
-		return "", "", errs.Usage("unrecognized coinbase reference: %q", input)
+func priceOp(ctx context.Context, in priceInput, emit func(*Price) error) error {
+	var (
+		result *Price
+		err    error
+	)
+	switch in.PriceType {
+	case "buy":
+		result, err = in.Client.BuyPrice(ctx, in.Pair)
+	case "sell":
+		result, err = in.Client.SellPrice(ctx, in.Pair)
+	default:
+		in.PriceType = "spot"
+		result, err = in.Client.SpotPrice(ctx, in.Pair)
 	}
-	return "page", id, nil
+	if err != nil {
+		return mapErr(err)
+	}
+	result.Pair = in.Pair
+	result.Type = in.PriceType
+	return emit(result)
+}
+
+func ratesOp(ctx context.Context, in ratesInput, emit func(*ExchangeRate) error) error {
+	rate, err := in.Client.ExchangeRates(ctx, in.Currency)
+	if err != nil {
+		return mapErr(err)
+	}
+	return emit(rate)
+}
+
+// --- Resolver: URI driver string functions (no network) ---
+
+// Classify turns any accepted input into the canonical (type, id).
+// A pair like "BTC-USD" maps to ("pair", "BTC-USD");
+// a bare currency like "BTC" maps to ("currency", "BTC").
+func (Domain) Classify(input string) (uriType, id string, err error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return "", "", errs.Usage("empty coinbase reference")
+	}
+	// If it looks like a pair (contains a dash and both parts uppercase-ish), classify as pair.
+	if looksLikePair(input) {
+		return "pair", strings.ToUpper(input), nil
+	}
+	return "currency", strings.ToUpper(input), nil
 }
 
 // Locate is the inverse: the live https URL for a (type, id).
 func (Domain) Locate(uriType, id string) (string, error) {
-	if uriType != "page" {
+	switch uriType {
+	case "pair":
+		// BTC-USD → https://www.coinbase.com/price/BTC (drop the -USD suffix)
+		base := id
+		if idx := strings.Index(id, "-"); idx != -1 {
+			base = id[:idx]
+		}
+		return "https://www.coinbase.com/price/" + strings.ToLower(base), nil
+	case "currency":
+		return "https://www.coinbase.com/price/" + strings.ToLower(id), nil
+	default:
 		return "", errs.Usage("coinbase has no resource type %q", uriType)
 	}
-	return BaseURL + "/" + strings.Trim(id, "/"), nil
 }
 
 // --- helpers ---
 
-// pagePath turns any accepted input into the canonical page id: the path of a
-// full URL on this host, or a bare path with its slashes trimmed.
-func pagePath(input string) string {
-	input = strings.TrimSpace(input)
-	if u, err := url.Parse(input); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
-		return strings.Trim(u.Path, "/")
-	}
-	return strings.Trim(input, "/")
+// looksLikePair returns true for inputs like "BTC-USD" or "eth-eur".
+func looksLikePair(input string) bool {
+	parts := strings.SplitN(input, "-", 2)
+	return len(parts) == 2 && len(parts[0]) >= 2 && len(parts[1]) >= 2
 }
 
-// mapErr converts a library error into the kit error kind that carries the right
-// exit code, so a host renders the same outcomes the standalone binary does. As
-// you add sentinel errors to the library, map them here, for example:
-//
-//	case errors.Is(err, ErrNotFound):
-//		return errs.NotFound("%s", err.Error())
-//	case errors.Is(err, ErrRateLimited):
-//		return errs.RateLimited("%s", err.Error())
+// mapErr converts a library error into the kit error kind with the right exit code.
 func mapErr(err error) error {
 	return err
 }

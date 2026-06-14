@@ -7,70 +7,129 @@ import (
 )
 
 // These tests are offline: they exercise the URI driver's pure string functions
-// and the host wiring (mint, body, resolve), which need no network. The client's
-// HTTP behaviour is covered in coinbase_test.go.
+// and the host wiring (mint, body, resolve), which need no network.
+// The client's HTTP behaviour is covered in coinbase_test.go.
 
 func TestDomainInfo(t *testing.T) {
 	info := Domain{}.Info()
 	if info.Scheme != "coinbase" {
 		t.Errorf("Scheme = %q, want coinbase", info.Scheme)
 	}
-	if len(info.Hosts) == 0 || info.Hosts[0] != Host {
-		t.Errorf("Hosts = %v, want [%s]", info.Hosts, Host)
+	if len(info.Hosts) == 0 {
+		t.Error("Hosts is empty")
 	}
 	if info.Identity.Binary != "coinbase" {
 		t.Errorf("Identity.Binary = %q, want coinbase", info.Identity.Binary)
 	}
 }
 
-func TestClassify(t *testing.T) {
-	cases := []struct{ in, typ, id string }{
-		{"wiki/Go", "page", "wiki/Go"},
-		{"/about/", "page", "about"},
-		{"https://" + Host + "/team/contact", "page", "team/contact"},
+func TestClassify_Pair(t *testing.T) {
+	cases := []struct {
+		in      string
+		wantTyp string
+		wantID  string
+	}{
+		{"BTC-USD", "pair", "BTC-USD"},
+		{"eth-eur", "pair", "ETH-EUR"},
+		{"BTC", "currency", "BTC"},
+		{"eth", "currency", "ETH"},
 	}
 	for _, tc := range cases {
 		typ, id, err := Domain{}.Classify(tc.in)
-		if err != nil || typ != tc.typ || id != tc.id {
-			t.Errorf("Classify(%q) = (%q, %q, %v), want (%q, %q, nil)",
-				tc.in, typ, id, err, tc.typ, tc.id)
+		if err != nil {
+			t.Errorf("Classify(%q) error: %v", tc.in, err)
+			continue
+		}
+		if typ != tc.wantTyp || id != tc.wantID {
+			t.Errorf("Classify(%q) = (%q, %q), want (%q, %q)", tc.in, typ, id, tc.wantTyp, tc.wantID)
 		}
 	}
 }
 
-func TestLocate(t *testing.T) {
-	got, err := Domain{}.Locate("page", "wiki/Go")
-	want := "https://" + Host + "/wiki/Go"
-	if err != nil || got != want {
-		t.Errorf("Locate = (%q, %v), want (%q, nil)", got, err, want)
+func TestClassify_Empty(t *testing.T) {
+	_, _, err := Domain{}.Classify("")
+	if err == nil {
+		t.Error("Classify(\"\") expected error, got nil")
 	}
 }
 
-// TestHostWiring mounts the driver in a kit Host (the runtime ant drives) and
-// checks the round trip: a record mints to its URI, its body is readable, and a
-// bare id resolves back to the same URI. The init in domain.go registers the
-// domain, so kit.Open finds it.
+func TestLocate_Pair(t *testing.T) {
+	got, err := Domain{}.Locate("pair", "BTC-USD")
+	if err != nil {
+		t.Fatalf("Locate pair: %v", err)
+	}
+	want := "https://www.coinbase.com/price/btc"
+	if got != want {
+		t.Errorf("Locate(pair, BTC-USD) = %q, want %q", got, want)
+	}
+}
+
+func TestLocate_Currency(t *testing.T) {
+	got, err := Domain{}.Locate("currency", "ETH")
+	if err != nil {
+		t.Fatalf("Locate currency: %v", err)
+	}
+	want := "https://www.coinbase.com/price/eth"
+	if got != want {
+		t.Errorf("Locate(currency, ETH) = %q, want %q", got, want)
+	}
+}
+
+func TestLocate_Unknown(t *testing.T) {
+	_, err := Domain{}.Locate("unknown", "x")
+	if err == nil {
+		t.Error("Locate(unknown) expected error, got nil")
+	}
+}
+
+func TestLooksLikePair(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"BTC-USD", true},
+		{"eth-eur", true},
+		{"BTC", false},
+		{"X-Y", false},
+		{"-USD", false},
+		{"BTC-", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		got := looksLikePair(tc.in)
+		if got != tc.want {
+			t.Errorf("looksLikePair(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestHostWiring(t *testing.T) {
 	h, err := kit.Open()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	p := &Page{ID: "wiki/Go", URL: "https://" + Host + "/wiki/Go", Title: "Go", Body: "Go is a language."}
+	// Verify that the coinbase domain is registered.
+	if _, ok := h.Domain("coinbase"); !ok {
+		t.Fatal("coinbase domain not registered")
+	}
+
+	// Price is a Single resolver op, so Mint should work for it.
+	p := &Price{Pair: "BTC-USD", Amount: "64000", Currency: "USD", Type: "spot"}
 	u, err := h.Mint(p)
 	if err != nil {
-		t.Fatalf("Mint: %v", err)
+		t.Fatalf("Mint(Price): %v", err)
 	}
-	if want := "coinbase://page/wiki/Go"; u.String() != want {
+	if want := "coinbase://price/BTC-USD"; u.String() != want {
 		t.Errorf("Mint = %q, want %q", u.String(), want)
 	}
 
-	if body, ok := h.Body(p); !ok || body == "" {
-		t.Errorf("Body = (%q, %v), want non-empty", body, ok)
+	// Verify ResolveOn routes "BTC-USD" to the price URI.
+	got, err := h.ResolveOn("coinbase", "BTC-USD")
+	if err != nil {
+		t.Fatalf("ResolveOn: %v", err)
 	}
-
-	got, err := h.ResolveOn("coinbase", "about")
-	if err != nil || got.String() != "coinbase://page/about" {
-		t.Errorf("ResolveOn = (%q, %v), want coinbase://page/about", got.String(), err)
+	if got.String() != "coinbase://pair/BTC-USD" {
+		t.Errorf("ResolveOn = %q, want coinbase://pair/BTC-USD", got.String())
 	}
 }
